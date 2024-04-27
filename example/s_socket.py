@@ -1,0 +1,144 @@
+import hashlib
+import random
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+from Crypto.Util.Padding import pad, unpad
+from Crypto.Util.py3compat import *
+
+
+# Diffie-Hellman Key Exchange
+class DiffieHellman:
+    def __init__(self, prime, base):
+        self.prime = prime
+        self.base = base
+        self.private_key = random.randint(1, prime - 1)
+        self.public_key = pow(base, self.private_key, prime)
+        self.shared_secret = None
+
+    def compute_shared_secret(self, other_public_key):
+        self.shared_secret = pow(other_public_key, self.private_key, self.prime)
+        print("(Diffie-Hellman) Shared secret: ", self.shared_secret)
+
+
+class AESCipher:
+    def __init__(self, key):
+        self.key = key
+        self.block_size = AES.block_size
+    
+    def encrypt(self, plaintext):
+        print("\n(AES) Encripting data: ", plaintext)
+        iv = get_random_bytes(self.block_size)
+        cipher = AES.new(self.key, AES.MODE_CBC, iv)
+        ciphertext = cipher.encrypt(pad(plaintext.encode(), self.block_size))
+        print("(AES) Encrypted data: ", iv + ciphertext, "\n")
+        return iv + ciphertext
+
+    def decrypt(self, ciphertext):
+        print("\n(AES) Decrypting data: ", ciphertext)
+        if len(ciphertext) < self.block_size:
+            raise ValueError("Invalid ciphertext")
+        
+        iv = ciphertext[:self.block_size]
+        cipher = AES.new(self.key, AES.MODE_CBC, iv)
+        plaintext = unpad(cipher.decrypt(ciphertext[self.block_size:]), self.block_size)
+        print("(AES) Decrypted data: ", plaintext.decode(), "\n")
+        return plaintext.decode()
+
+
+
+# TLSProtocol
+class TLSProtocol:
+    def __init__(self, socket):
+        self.socket = socket
+        self.client_public_key = None
+        self.server_public_key = None
+        self.shared_secret = None
+        self.aes_cipher = None
+
+    def client_handshake(self):
+        print("(Diffie-Hellman) Client handshake")
+        prime = 9973
+        base = 1567
+
+        diffie_hellman = DiffieHellman(prime, base)  # Example prime and base values
+        self.client_public_key = diffie_hellman.public_key
+
+        # Send ClientHello with client's public key
+        client_hello = f"ClientHello:{self.client_public_key}"
+        self.socket.send(client_hello.encode())
+
+        # Receive ServerHello with server's public key
+        server_hello = self.socket.recv(1024)
+        self.server_public_key = int(server_hello.split(b":")[1])
+
+        # Compute shared secret using Diffie-Hellman
+        diffie_hellman.compute_shared_secret(self.server_public_key)
+        self.shared_secret = diffie_hellman.shared_secret
+
+        # Initialize AES cipher with shared secret
+        hash_object = hashlib.sha256()
+        hash_object.update(str(self.shared_secret).encode('utf-8'))
+        hashed_key = hash_object.digest()
+        self.aes_cipher = AESCipher(hashed_key)
+        print("(Diffie-Hellman) Client handshake done\n")
+
+    def server_handshake(self):
+        print("(Diffie-Hellman) Server handshake")
+        client_hello = self.socket.recv(1024)
+        client_public_key = int(client_hello.split(b":")[1])
+        self.client_public_key = client_public_key
+
+        # Generate server's Diffie-Hellman parameters
+        diffie_hellman = DiffieHellman(9973, 1567)  # Example prime and base values
+        self.server_public_key = diffie_hellman.public_key
+
+        # Send ServerHello with server's public key
+        server_hello = f"ServerHello:{self.server_public_key}"
+        self.socket.send(server_hello.encode())
+
+        # Compute shared secret using Diffie-Hellman
+        diffie_hellman.compute_shared_secret(self.client_public_key)
+        self.shared_secret = diffie_hellman.shared_secret
+
+        # Initialize AES cipher with shared secret
+        hash_object = hashlib.sha256()
+        hash_object.update(str(self.shared_secret).encode('utf-8'))
+        hashed_key = hash_object.digest()
+        self.aes_cipher = AESCipher(hashed_key)
+        print("(Diffie-Hellman) Server handshake done\n")
+
+
+    def send(self, data):
+        if self.aes_cipher is None:
+            raise Exception("AES cipher is not initialized.")
+        encrypted_data = self.aes_cipher.encrypt(data)
+        send(self.socket,encrypted_data)
+        print("Encrypted data sent")
+
+    def receive(self):
+        if self.aes_cipher is None:
+            raise Exception("AES cipher is not initialized.")
+        encrypted_data = receive(self.socket)
+        print("Encrypted data recived")
+        if not encrypted_data:
+            return None
+        decrypted_data = self.aes_cipher.decrypt(encrypted_data)
+        return decrypted_data
+
+LENGTH_PREFIX_SIZE = 4
+
+def add_length_prefix(data):
+    length = len(data)
+    return length.to_bytes(LENGTH_PREFIX_SIZE, byteorder='big') + data
+
+def send(socket, data):
+    data = add_length_prefix(data)
+    socket.send(data)
+
+def receive(socket):
+    length_prefix = socket.recv(LENGTH_PREFIX_SIZE)
+    length = int.from_bytes(length_prefix, byteorder='big')
+    return socket.recv(length)
+
+def close(socket):
+    socket.close()
